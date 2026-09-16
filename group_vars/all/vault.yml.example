@@ -1,0 +1,11 @@
+---
+# Copy this file to vault.yml, fill in real secrets, then encrypt it:
+#
+#   cp group_vars/all/vault.yml.example group_vars/all/vault.yml
+#   ansible-vault encrypt group_vars/all/vault.yml
+#
+# Never commit an unencrypted vault.yml.
+
+vault_mysql_root_password: CHANGE_ME
+vault_nextcloud_db_password: CHANGE_ME
+vault_nextcloud_admin_password: CHANGE_ME

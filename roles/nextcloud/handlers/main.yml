@@ -1,0 +1,10 @@
+---
+- name: Reload apache2
+  ansible.builtin.service:
+    name: apache2
+    state: reloaded
+
+- name: Restart php-fpm
+  ansible.builtin.service:
+    name: "php{{ nextcloud_php_version }}-fpm"
+    state: restarted

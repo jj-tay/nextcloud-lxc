@@ -1,0 +1,9 @@
+; {{ ansible_managed }}
+memory_limit = {{ nextcloud_php_memory_limit }}
+upload_max_filesize = {{ nextcloud_php_upload_max_filesize }}
+post_max_size = {{ nextcloud_php_post_max_size }}
+max_execution_time = {{ nextcloud_php_max_execution_time }}
+date.timezone = UTC
+
+[apcu]
+apc.enable_cli = 1
