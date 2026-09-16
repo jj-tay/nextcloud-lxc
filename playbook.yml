@@ -1,0 +1,22 @@
+---
+- name: Install or verify the Nextcloud stack
+  hosts: nextcloud_lxc
+  gather_facts: true
+  roles:
+    - nextcloud
+
+# Upgrade logic is intentionally kept out of the role's tasks/main.yml so
+# that a plain `ansible-playbook playbook.yml` run never touches it. The
+# 'never' tag means this play only runs when --tags upgrade is passed
+# explicitly, e.g.:
+#
+#   ansible-playbook playbook.yml --tags upgrade -e nextcloud_version=34.1.0
+- name: Upgrade Nextcloud to a new release
+  hosts: nextcloud_lxc
+  gather_facts: true
+  tags: ['upgrade', 'never']
+  tasks:
+    - name: Run the Nextcloud upgrade tasks
+      ansible.builtin.import_role:
+        name: nextcloud
+        tasks_from: upgrade

@@ -1,0 +1,111 @@
+---
+# Upgrade path. Only ever executed via `--tags upgrade` (see playbook.yml) —
+# never part of a normal install run.
+#
+# Ansible's default behavior (a failed task halts the play) is what we want
+# here: if any step below fails, maintenance mode stays ON and the play
+# stops. Do not wrap this in rescue/always to "clean up" — that would turn
+# maintenance mode back off after a broken upgrade. Recovery from a failed
+# upgrade is via the Proxmox snapshot taken below, not by re-running this
+# file.
+
+- name: Turn on maintenance mode
+  ansible.builtin.command: occ maintenance:mode --on
+  args:
+    chdir: "{{ nextcloud_install_dir }}"
+  become: true
+  become_user: www-data
+  changed_when: true
+
+- name: Snapshot the LXC before touching anything
+  ansible.builtin.command: >-
+    pct snapshot {{ nextcloud_lxc_vmid }} pre-upgrade-nextcloud-{{ nextcloud_version | replace('.', '-') }}
+  delegate_to: "{{ groups['proxmox'][0] }}"
+  changed_when: true
+
+- name: Back up config.php
+  ansible.builtin.copy:
+    src: "{{ nextcloud_install_dir }}/config/config.php"
+    dest: "{{ nextcloud_install_dir }}/config/config.php.bak-{{ ansible_date_time.iso8601_basic_short }}"
+    remote_src: true
+    owner: www-data
+    group: www-data
+    mode: "0640"
+
+- name: Move the live install aside
+  ansible.builtin.command: >-
+    mv {{ nextcloud_install_dir }} /var/www/nextcloud-live-previous
+  args:
+    creates: /var/www/nextcloud-live-previous
+    removes: "{{ nextcloud_install_dir }}"
+
+- name: Download the new Nextcloud release tarball
+  ansible.builtin.get_url:
+    url: "{{ nextcloud_download_url }}"
+    dest: "/tmp/nextcloud-{{ nextcloud_version }}.tar.bz2"
+    mode: "0644"
+
+- name: Unpack the new release
+  ansible.builtin.unarchive:
+    src: "/tmp/nextcloud-{{ nextcloud_version }}.tar.bz2"
+    dest: /var/www
+    remote_src: true
+    creates: "{{ nextcloud_install_dir }}/version.php"
+
+- name: Find apps installed on the previous release
+  ansible.builtin.find:
+    paths: /var/www/nextcloud-live-previous/apps
+    file_type: directory
+  register: nextcloud_old_apps
+
+- name: Find apps bundled with the new release
+  ansible.builtin.find:
+    paths: "{{ nextcloud_install_dir }}/apps"
+    file_type: directory
+  register: nextcloud_new_apps
+
+- name: Carry over third-party apps not bundled in the new release
+  ansible.builtin.copy:
+    src: "{{ item.path }}/"
+    dest: "{{ nextcloud_install_dir }}/apps/{{ item.path | basename }}/"
+    remote_src: true
+    owner: www-data
+    group: www-data
+    mode: preserve
+  loop: "{{ nextcloud_old_apps.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  when: (item.path | basename) not in (nextcloud_new_apps.files | map(attribute='path') | map('basename') | list)
+
+- name: Carry the pre-upgrade config.php into the new release
+  ansible.builtin.copy:
+    src: /var/www/nextcloud-live-previous/config/config.php
+    dest: "{{ nextcloud_install_dir }}/config/config.php"
+    remote_src: true
+    owner: www-data
+    group: www-data
+    mode: "0640"
+
+- name: Own the new install directory
+  ansible.builtin.file:
+    path: "{{ nextcloud_install_dir }}"
+    owner: www-data
+    group: www-data
+    recurse: true
+    state: directory
+
+- name: Run the Nextcloud upgrade
+  ansible.builtin.command: occ upgrade --no-interaction
+  args:
+    chdir: "{{ nextcloud_install_dir }}"
+  become: true
+  become_user: www-data
+  changed_when: true
+
+- name: Turn off maintenance mode
+  ansible.builtin.command: occ maintenance:mode --off
+  args:
+    chdir: "{{ nextcloud_install_dir }}"
+  become: true
+  become_user: www-data
+  changed_when: true

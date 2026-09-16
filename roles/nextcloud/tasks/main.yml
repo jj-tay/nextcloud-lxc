@@ -1,0 +1,254 @@
+---
+# Idempotent install/verify path. Never touches upgrade logic — see upgrade.yml.
+
+- name: Force www-data GID to {{ nextcloud_www_data_uid }}
+  ansible.builtin.group:
+    name: www-data
+    gid: "{{ nextcloud_www_data_uid }}"
+    system: true
+    state: present
+
+- name: Force www-data UID to {{ nextcloud_www_data_uid }}
+  ansible.builtin.user:
+    name: www-data
+    uid: "{{ nextcloud_www_data_uid }}"
+    group: www-data
+    system: true
+    shell: /usr/sbin/nologin
+    create_home: false
+
+- name: Install NFS client
+  ansible.builtin.apt:
+    name: nfs-common
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create data mount point
+  ansible.builtin.file:
+    path: "{{ nextcloud_data_mount }}"
+    state: directory
+    owner: www-data
+    group: www-data
+    mode: "0750"
+
+- name: Mount Nextcloud data directory from TrueNAS
+  ansible.posix.mount:
+    path: "{{ nextcloud_data_mount }}"
+    src: "{{ truenas_nfs_host }}:{{ truenas_nfs_export }}"
+    fstype: nfs
+    opts: "rw,soft,noatime"
+    state: mounted
+
+- name: Verify the data directory is actually an NFS mount
+  ansible.builtin.command: findmnt --target {{ nextcloud_data_mount }} --output FSTYPE --noheadings
+  register: nextcloud_data_fstype
+  changed_when: false
+
+- name: Fail loudly if the data directory is not NFS-backed
+  ansible.builtin.assert:
+    that:
+      - "'nfs' in nextcloud_data_fstype.stdout"
+    fail_msg: >-
+      {{ nextcloud_data_mount }} is not an NFS mount (found
+      '{{ nextcloud_data_fstype.stdout }}'). Refusing to continue — Nextcloud
+      data must never land on the container's own rootfs.
+
+- name: Install Apache, MariaDB, Redis and PHP
+  ansible.builtin.apt:
+    name: "{{ ['apache2', 'mariadb-server', 'python3-pymysql', 'redis-server', 'unzip'] + nextcloud_php_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Add www-data to the redis group (unix socket access)
+  ansible.builtin.user:
+    name: www-data
+    groups: redis
+    append: true
+
+- name: Enable required Apache modules
+  community.general.apache2_module:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - proxy_fcgi
+    - setenvif
+    - rewrite
+    - headers
+    - env
+    - dir
+    - mime
+  notify: Reload apache2
+
+- name: Deploy PHP-FPM tuning overrides
+  ansible.builtin.template:
+    src: php-nextcloud.ini.j2
+    dest: "/etc/php/{{ nextcloud_php_version }}/fpm/conf.d/99-nextcloud.ini"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart php-fpm
+
+- name: Deploy Nextcloud Apache vhost
+  ansible.builtin.template:
+    src: nextcloud-vhost.conf.j2
+    dest: /etc/apache2/sites-available/nextcloud.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload apache2
+
+- name: Disable the default Apache site
+  ansible.builtin.command: a2dissite 000-default
+  args:
+    removes: /etc/apache2/sites-enabled/000-default.conf
+  notify: Reload apache2
+
+- name: Enable the Nextcloud Apache site
+  ansible.builtin.command: a2ensite nextcloud
+  args:
+    creates: /etc/apache2/sites-enabled/nextcloud.conf
+  notify: Reload apache2
+
+- name: Ensure MariaDB, Redis, Apache and PHP-FPM are running and enabled
+  ansible.builtin.service:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+  loop:
+    - mariadb
+    - redis-server
+    - "php{{ nextcloud_php_version }}-fpm"
+    - apache2
+
+- name: Set the MariaDB root password
+  community.mysql.mysql_user:
+    name: root
+    password: "{{ vault_mysql_root_password }}"
+    login_unix_socket: /run/mysqld/mysqld.sock
+    check_implicit_admin: true
+    state: present
+
+- name: Create the Nextcloud database
+  community.mysql.mysql_db:
+    name: "{{ nextcloud_db_name }}"
+    encoding: utf8mb4
+    collation: utf8mb4_general_ci
+    login_user: root
+    login_password: "{{ vault_mysql_root_password }}"
+    state: present
+
+- name: Create the Nextcloud database user
+  community.mysql.mysql_user:
+    name: "{{ nextcloud_db_user }}"
+    password: "{{ vault_nextcloud_db_password }}"
+    priv: "{{ nextcloud_db_name }}.*:ALL"
+    login_user: root
+    login_password: "{{ vault_mysql_root_password }}"
+    state: present
+
+- name: Check whether Nextcloud is already unpacked
+  ansible.builtin.stat:
+    path: "{{ nextcloud_install_dir }}/version.php"
+  register: nextcloud_version_file
+
+- name: Download and install Nextcloud
+  when: not nextcloud_version_file.stat.exists
+  block:
+    - name: Download the Nextcloud release tarball
+      ansible.builtin.get_url:
+        url: "{{ nextcloud_download_url }}"
+        dest: "/tmp/nextcloud-{{ nextcloud_version }}.tar.bz2"
+        mode: "0644"
+
+    - name: Unpack Nextcloud to /var/www
+      ansible.builtin.unarchive:
+        src: "/tmp/nextcloud-{{ nextcloud_version }}.tar.bz2"
+        dest: /var/www
+        remote_src: true
+        creates: "{{ nextcloud_install_dir }}/version.php"
+        owner: www-data
+        group: www-data
+
+    - name: Own the Nextcloud install directory
+      ansible.builtin.file:
+        path: "{{ nextcloud_install_dir }}"
+        owner: www-data
+        group: www-data
+        recurse: true
+        state: directory
+
+- name: Check whether Nextcloud is already installed
+  ansible.builtin.command: >-
+    occ status --output=json
+  args:
+    chdir: "{{ nextcloud_install_dir }}"
+  become: true
+  become_user: www-data
+  register: nextcloud_status
+  changed_when: false
+  failed_when: false
+
+- name: Run first-time Nextcloud install
+  ansible.builtin.command: >-
+    occ maintenance:install
+    --database mysql
+    --database-name {{ nextcloud_db_name }}
+    --database-user {{ nextcloud_db_user }}
+    --database-pass {{ vault_nextcloud_db_password }}
+    --admin-user {{ nextcloud_admin_user }}
+    --admin-pass {{ vault_nextcloud_admin_password }}
+    --data-dir {{ nextcloud_data_mount }}
+  args:
+    chdir: "{{ nextcloud_install_dir }}"
+  become: true
+  become_user: www-data
+  when: "'\"installed\":true' not in nextcloud_status.stdout"
+  changed_when: true
+
+- name: Set the trusted domain
+  ansible.builtin.command: >-
+    occ config:system:set trusted_domains 1 --value={{ nextcloud_domain }}
+  args:
+    chdir: "{{ nextcloud_install_dir }}"
+  become: true
+  become_user: www-data
+  changed_when: true
+
+- name: Set the CLI/cron URL
+  ansible.builtin.command: >-
+    occ config:system:set overwrite.cli.url --value=http://{{ nextcloud_domain }}
+  args:
+    chdir: "{{ nextcloud_install_dir }}"
+  become: true
+  become_user: www-data
+  changed_when: true
+
+- name: Configure Redis for distributed caching and file locking
+  ansible.builtin.command: "{{ item }}"
+  args:
+    chdir: "{{ nextcloud_install_dir }}"
+  become: true
+  become_user: www-data
+  changed_when: true
+  loop:
+    - "occ config:system:set memcache.local --value='\\OC\\Memcache\\APCu'"
+    - "occ config:system:set memcache.locking --value='\\OC\\Memcache\\Redis'"
+    - "occ config:system:set redis host --value=/run/redis/redis-server.sock"
+    - "occ config:system:set redis port --value=0 --type=integer"
+
+- name: Set background jobs to run via cron
+  ansible.builtin.command: occ background:cron
+  args:
+    chdir: "{{ nextcloud_install_dir }}"
+  become: true
+  become_user: www-data
+  changed_when: true
+
+- name: Install the Nextcloud cron job
+  ansible.builtin.cron:
+    name: nextcloud background jobs
+    user: www-data
+    minute: "*/5"
+    job: "php -f {{ nextcloud_install_dir }}/cron.php"
