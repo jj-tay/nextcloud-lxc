@@ -218,12 +218,23 @@
 
 - name: Set the CLI/cron URL
   ansible.builtin.command: >-
-    occ config:system:set overwrite.cli.url --value=http://{{ nextcloud_domain }}
+    occ config:system:set overwrite.cli.url --value=https://{{ nextcloud_domain }}
   args:
     chdir: "{{ nextcloud_install_dir }}"
   become: true
   become_user: www-data
   changed_when: true
+
+- name: Trust the reverse proxy and its forwarded protocol
+  ansible.builtin.command: "{{ item }}"
+  args:
+    chdir: "{{ nextcloud_install_dir }}"
+  become: true
+  become_user: www-data
+  changed_when: true
+  loop:
+    - "occ config:system:set trusted_proxies 0 --value={{ nextcloud_trusted_proxy_ip }}"
+    - "occ config:system:set overwriteprotocol --value=https"
 
 - name: Configure Redis for distributed caching and file locking
   ansible.builtin.command: "{{ item }}"
