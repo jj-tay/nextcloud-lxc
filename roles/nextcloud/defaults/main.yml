@@ -2,14 +2,21 @@
 # Non-secret configuration. Secrets live in group_vars/all/vault.yml.
 
 # --- Environment placeholders (fill in per environment) ---
-nextcloud_lxc_host: 192.168.1.50
-nextcloud_domain: cloud.home.arpa
+# nextcloud_lxc_host: assign this as a UniFi Fixed IP (DHCP reservation) for
+# the LXC's MAC address before the first run.
+nextcloud_lxc_host: 192.168.10.51
+nextcloud_domain: nextcloud.home.blueyak.net
 nextcloud_data_mount: /mnt/ncdata
-truenas_nfs_host: 10.0.30.2
+truenas_nfs_host: 192.168.10.123
 truenas_nfs_export: /mnt/tank/nextcloud
+# Must match the TrueNAS NFS export's Mapall User/Group UID/GID (create a
+# dedicated UID-1000 user, e.g. "ncdata", on TrueNAS and set it as Mapall).
 nextcloud_www_data_uid: 1000
-proxmox_host: 192.168.1.10
-nextcloud_lxc_vmid: 100
+proxmox_host: 192.168.10.50
+nextcloud_lxc_vmid: 104
+
+# --- Reverse proxy (Nginx Proxy Manager terminates TLS in front of this LXC) ---
+nextcloud_trusted_proxy_ip: 192.168.10.59
 
 # --- Nextcloud release ---
 # Full point release; overridden with -e nextcloud_version=x.y.z for upgrades.
