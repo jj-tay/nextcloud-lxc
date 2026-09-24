@@ -17,6 +17,9 @@
     shell: /usr/sbin/nologin
     create_home: false
 
+- name: Configure the vmbr1 storage NIC and wait for it before mounting NFS
+  ansible.builtin.import_tasks: network.yml
+
 - name: Install NFS client
   ansible.builtin.apt:
     name: nfs-common
@@ -37,7 +40,8 @@
     path: "{{ nextcloud_data_mount }}"
     src: "{{ truenas_nfs_host }}:{{ truenas_nfs_export }}"
     fstype: nfs
-    opts: "rw,soft,noatime"
+    # _netdev: at boot, delay this mount until the network (incl. vmbr1) is up.
+    opts: "rw,soft,noatime,_netdev"
     state: mounted
 
 - name: Verify the data directory is actually an NFS mount
