@@ -22,8 +22,9 @@ networking or TrueNAS.
    - Give the VM's `vmbr1` NIC the static IP `10.10.10.10/24` with **no
      gateway** (this must match `truenas_nfs_host`).
    - Create the `tank/nextcloud` dataset, NFS-share it, and set the
-     export's mapall user/group to the UID/GID configured in
-     `nextcloud_www_data_uid` (default `1000`).
+     export's mapall user/group to the UID configured in
+     `nextcloud_www_data_uid` (default `1000`) and the GID configured in
+     `nextcloud_www_data_gid` (default `3000`).
    - Add `10.10.10.11` (the LXC's vmbr1 IP) to the export's allowed
      hosts/networks. Ansible never touches TrueNAS, so this stays manual.
 3. **Proxmox API token** (used to create and start the LXC):

@@ -12,9 +12,13 @@ nextcloud_data_mount: /mnt/ncdata
 # NFS traffic has to ride the isolated vmbr1 link.
 truenas_nfs_host: 10.10.10.10
 truenas_nfs_export: /mnt/tank/nextcloud
-# Must match the TrueNAS NFS export's Mapall User/Group UID/GID (create a
-# dedicated UID-1000 user, e.g. "ncdata", on TrueNAS and set it as Mapall).
+# www-data's UID and GID inside the LXC. These must match the TrueNAS NFS
+# export's Mapall User UID and Mapall Group GID exactly (currently
+# nextcloud-nfs:1000 and nextcloud-nfs:3000 on the TrueNAS side — TrueNAS
+# auto-created the group at 3000, so UID and GID deliberately differ).
+# A mismatch causes file permission errors on the NFS-mounted data directory.
 nextcloud_www_data_uid: 1000
+nextcloud_www_data_gid: 3000
 proxmox_host: 192.168.10.50
 
 # --- Reverse proxy (Nginx Proxy Manager terminates TLS in front of this LXC) ---
