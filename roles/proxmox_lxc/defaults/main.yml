@@ -12,7 +12,7 @@ proxmox_lxc_hostname: nextcloud
 proxmox_lxc_cores: 2
 proxmox_lxc_memory: 4096   # MiB
 proxmox_lxc_swap: 512      # MiB
-proxmox_lxc_rootfs_storage: local-lvm
+proxmox_lxc_rootfs_storage: local-zfs
 proxmox_lxc_rootfs_size: 16   # GiB. OS + Nextcloud code only; user data is on NFS.
 
 # --- OS template ---
@@ -21,7 +21,7 @@ proxmox_lxc_rootfs_size: 16   # GiB. OS + Nextcloud code only; user data is on N
 # is not there yet. Check the exact current name with:
 #   pveam update && pveam available --section system | grep debian-13
 proxmox_lxc_template_storage: local
-proxmox_lxc_template: debian-13-standard_13.1-2_amd64.tar.zst
+proxmox_lxc_template: debian-13-standard_13.6-1_amd64.tar.zst
 proxmox_lxc_ostemplate: "{{ proxmox_lxc_template_storage }}:vztmpl/{{ proxmox_lxc_template }}"
 
 # --- LAN NIC (net0) ---

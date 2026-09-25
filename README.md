@@ -37,7 +37,7 @@ networking or TrueNAS.
      - `PVEVMAdmin` on `/vms` (create, configure, start, and the
        `nesting=1` feature flag)
      - `PVEDatastoreAdmin` on `/storage/local` (template download) and
-       `/storage/local-lvm` (rootfs), or whatever
+       `/storage/local-zfs` (rootfs), or whatever
        `proxmox_lxc_template_storage` / `proxmox_lxc_rootfs_storage` are
      - `PVESDNUser` on `/sdn/zones/localnetwork` (to attach NICs to
        `vmbr0` / `vmbr1`)
