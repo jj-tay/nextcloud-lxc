@@ -1,4 +1,15 @@
 ---
+# Runs on the Ansible controller and talks to the Proxmox API. Creates and
+# starts the LXC if needed, waits for SSH, then add_host's the LXC's LAN IP
+# into the nextcloud_lxc group for the play below. If this play fails,
+# ansible-playbook stops here and the LXC is never touched.
+- name: Provision the Nextcloud LXC on Proxmox
+  hosts: proxmox_api
+  gather_facts: false
+  tags: ['provision']
+  roles:
+    - proxmox_lxc
+
 - name: Install or verify the Nextcloud stack
   hosts: nextcloud_lxc
   gather_facts: true

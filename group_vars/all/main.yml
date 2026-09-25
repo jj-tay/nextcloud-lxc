@@ -1,0 +1,27 @@
+---
+# Non-secret vars shared by more than one play. Anything only one role needs
+# stays in that role's defaults/main.yml. These live here (not in
+# roles/nextcloud/defaults) because role defaults are only visible to plays
+# that load the role, and the proxmox_lxc provisioning play has to agree with
+# the nextcloud role on which container it is and how its vmbr1 NIC looks.
+
+# Proxmox VMID of the Nextcloud LXC: created with this ID by the proxmox_lxc
+# role, and targeted by `pct` in the nextcloud role (network.yml, upgrade.yml).
+nextcloud_lxc_vmid: 104
+
+# Expected LAN IP of the LXC. Assign it as a UniFi Fixed IP (DHCP
+# reservation) for the LXC's MAC address (see proxmox_lxc_lan_hwaddr in
+# roles/proxmox_lxc/defaults/main.yml). Install runs connect to whatever IP
+# the Proxmox API reports and warn if it differs from this; upgrade-only runs
+# connect to the ansible_host in inventory.ini, which should match it.
+nextcloud_lxc_host: 192.168.10.51
+
+# --- Storage network (vmbr1: internal-only, no gateway) ---
+# The LXC's NIC on vmbr1 (Proxmox netN key) and its static IP. The
+# proxmox_lxc role creates the NIC with these values; the nextcloud role's
+# tasks/network.yml then verifies them via `pct` (and only fixes them with
+# `pct set` if they have drifted). No gateway is ever set on this NIC, so the
+# LAN NIC keeps the only default route.
+nextcloud_vmbr1_netif: net1
+nextcloud_vmbr1_bridge: vmbr1
+nextcloud_vmbr1_ip: 10.10.10.11/24

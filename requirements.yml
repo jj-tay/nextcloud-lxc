@@ -3,3 +3,12 @@ collections:
   - name: ansible.posix
   - name: community.mysql
   - name: community.general
+  # LXC provisioning (proxmox, proxmox_template, proxmox_vm_info). This
+  # content moved out of community.general: from community.general 11.0.0
+  # on, community.general.proxmox is only a deprecated redirect to
+  # community.proxmox.proxmox (removal in 15.0.0), so it needs this
+  # collection installed either way. 1.0.0 is the first release where
+  # `update` and `force` are mutually exclusive; the role sets update=false
+  # explicitly, so later releases (update defaults to true) are fine too.
+  - name: community.proxmox
+    version: ">=1.0.0"

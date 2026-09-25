@@ -1,0 +1,126 @@
+---
+# Create and start the Nextcloud LXC through the Proxmox API (no SSH to the
+# hypervisor), then hand its LAN IP to the nextcloud play via add_host.
+#
+# Safe to re-run: state=present with update=false is a no-op for an existing
+# VMID (community.proxmox >= 1.0 defaults update to true, which would rewrite
+# the config, net0/net1 included, on every run), and state=started is a no-op
+# for a running container. Nothing here recreates, restarts or reconfigures
+# an existing container.
+
+- name: Provision the Nextcloud LXC via the Proxmox API
+  module_defaults:
+    group/community.proxmox.proxmox:
+      api_host: "{{ vault_proxmox_api_host }}"
+      api_user: "{{ vault_proxmox_api_user }}"
+      api_token_id: "{{ vault_proxmox_api_token_id }}"
+      api_token_secret: "{{ vault_proxmox_api_token_secret }}"
+      validate_certs: "{{ proxmox_lxc_api_validate_certs }}"
+  block:
+    - name: Ensure the Debian template is downloaded on the node
+      community.proxmox.proxmox_template:
+        node: "{{ proxmox_lxc_node }}"
+        storage: "{{ proxmox_lxc_template_storage }}"
+        content_type: vztmpl
+        template: "{{ proxmox_lxc_template }}"
+        timeout: 300
+        state: present
+
+    - name: Create the LXC if it does not exist yet (VMID {{ nextcloud_lxc_vmid }})
+      community.proxmox.proxmox:
+        node: "{{ proxmox_lxc_node }}"
+        vmid: "{{ nextcloud_lxc_vmid }}"
+        hostname: "{{ proxmox_lxc_hostname }}"
+        ostemplate: "{{ proxmox_lxc_ostemplate }}"
+        unprivileged: true
+        features: "{{ proxmox_lxc_features }}"
+        cores: "{{ proxmox_lxc_cores }}"
+        memory: "{{ proxmox_lxc_memory }}"
+        swap: "{{ proxmox_lxc_swap }}"
+        storage: "{{ proxmox_lxc_rootfs_storage }}"
+        disk: "{{ proxmox_lxc_rootfs_storage }}:{{ proxmox_lxc_rootfs_size }}"
+        # Both NICs at creation time. net1 matches exactly what the nextcloud
+        # role's tasks/network.yml checks for (bridge, name, ip, no gw), so
+        # its `pct set` stays skipped on a freshly provisioned container.
+        netif: "{{ {proxmox_lxc_lan_netif: proxmox_lxc_net0, nextcloud_vmbr1_netif: proxmox_lxc_net1} }}"
+        pubkey: "{{ lookup('ansible.builtin.file', proxmox_lxc_ssh_pubkey_file | expanduser) }}"
+        onboot: "{{ proxmox_lxc_onboot }}"
+        update: false
+        timeout: 300
+        state: present
+      vars:
+        proxmox_lxc_net0: >-
+          name={{ proxmox_lxc_lan_ifname }},bridge={{ proxmox_lxc_lan_bridge }},ip=dhcp{{
+          (',hwaddr=' ~ proxmox_lxc_lan_hwaddr) if proxmox_lxc_lan_hwaddr else '' }}
+        proxmox_lxc_net1: >-
+          name={{ proxmox_lxc_vmbr1_ifname }},bridge={{ nextcloud_vmbr1_bridge }},ip={{ nextcloud_vmbr1_ip }}
+
+    # update=false means an existing VMID is never touched, so make sure it
+    # really is our container before starting it and configuring it.
+    - name: Read the container at VMID {{ nextcloud_lxc_vmid }}
+      community.proxmox.proxmox_vm_info:
+        type: lxc
+        vmid: "{{ nextcloud_lxc_vmid }}"
+      register: proxmox_lxc_info
+
+    - name: Fail loudly if the VMID holds some other container ({{ nextcloud_lxc_vmid }})
+      ansible.builtin.assert:
+        that:
+          - proxmox_lxc_info.proxmox_vms | length == 1
+          - proxmox_lxc_info.proxmox_vms[0].name == proxmox_lxc_hostname
+        fail_msg: >-
+          VMID {{ nextcloud_lxc_vmid }} exists but is not an LXC named
+          '{{ proxmox_lxc_hostname }}' (found:
+          {{ proxmox_lxc_info.proxmox_vms | map(attribute='name') | list }}).
+          Refusing to start or configure it. Check nextcloud_lxc_vmid.
+
+    - name: Start the LXC (no-op if already running)
+      community.proxmox.proxmox:
+        vmid: "{{ nextcloud_lxc_vmid }}"
+        timeout: 120
+        state: started
+
+    - name: Wait for the LXC to get a LAN IP on {{ proxmox_lxc_lan_ifname }}
+      community.proxmox.proxmox_vm_info:
+        type: lxc
+        vmid: "{{ nextcloud_lxc_vmid }}"
+        config: current
+        network: true
+      register: proxmox_lxc_net_info
+      until: >-
+        proxmox_lxc_net_info.proxmox_vms[0].network | default([])
+        | selectattr('name', 'equalto', proxmox_lxc_lan_ifname)
+        | selectattr('inet', 'defined') | list | length > 0
+      retries: "{{ proxmox_lxc_ip_wait_retries }}"
+      delay: "{{ proxmox_lxc_ip_wait_delay }}"
+
+- name: Record the LXC's LAN IP
+  ansible.builtin.set_fact:
+    proxmox_lxc_lan_ip: >-
+      {{ (proxmox_lxc_net_info.proxmox_vms[0].network
+          | selectattr('name', 'equalto', proxmox_lxc_lan_ifname)
+          | selectattr('inet', 'defined') | first).inet | split('/') | first }}
+
+- name: Warn if the LXC did not get its reserved LAN IP
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: the LXC came up on {{ proxmox_lxc_lan_ip }}, not the reserved
+      {{ nextcloud_lxc_host }}. This run carries on with {{ proxmox_lxc_lan_ip }},
+      but upgrade runs use ansible_host from inventory.ini. Fix the UniFi
+      reservation for its MAC (or set proxmox_lxc_lan_hwaddr).
+  when: proxmox_lxc_lan_ip != nextcloud_lxc_host
+
+- name: Wait for SSH on the LXC before configuring it
+  ansible.builtin.wait_for:
+    host: "{{ proxmox_lxc_lan_ip }}"
+    port: 22
+    search_regex: OpenSSH
+    timeout: "{{ proxmox_lxc_ssh_timeout }}"
+
+- name: Point the nextcloud play at the provisioned LXC
+  ansible.builtin.add_host:
+    name: "{{ groups['nextcloud_lxc'][0] | default('nextcloud-lxc') }}"
+    groups: nextcloud_lxc
+    ansible_host: "{{ proxmox_lxc_lan_ip }}"
+    ansible_user: root
+  changed_when: false

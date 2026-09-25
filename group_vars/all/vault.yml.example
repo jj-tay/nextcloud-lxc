@@ -9,3 +9,12 @@
 vault_mysql_root_password: CHANGE_ME
 vault_nextcloud_db_password: CHANGE_ME
 vault_nextcloud_admin_password: CHANGE_ME
+
+# --- Proxmox API (used by the proxmox_lxc provisioning role) ---
+# Token auth only, no password. Create the token under
+# Datacenter → Permissions → API Tokens; the README lists the permissions it
+# needs. For a token shown as "ansible@pve!provision":
+vault_proxmox_api_host: 192.168.10.50        # hostname/IP only, no https:// or :8006
+vault_proxmox_api_user: ansible@pve          # the part before the "!"
+vault_proxmox_api_token_id: provision        # the part after the "!"
+vault_proxmox_api_token_secret: CHANGE_ME    # UUID shown once when the token is created
