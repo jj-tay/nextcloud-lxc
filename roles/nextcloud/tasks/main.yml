@@ -1,10 +1,10 @@
 ---
 # Idempotent install/verify path. Never touches upgrade logic — see upgrade.yml.
 
-- name: Force www-data GID to {{ nextcloud_www_data_uid }}
+- name: Force www-data GID to {{ nextcloud_www_data_gid }}
   ansible.builtin.group:
     name: www-data
-    gid: "{{ nextcloud_www_data_uid }}"
+    gid: "{{ nextcloud_www_data_gid }}"
     system: true
     state: present
 
