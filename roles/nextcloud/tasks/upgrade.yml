@@ -10,7 +10,7 @@
 # file.
 
 - name: Turn on maintenance mode
-  ansible.builtin.command: occ maintenance:mode --on
+  ansible.builtin.command: php occ maintenance:mode --on
   args:
     chdir: "{{ nextcloud_install_dir }}"
   become: true
@@ -95,7 +95,7 @@
     state: directory
 
 - name: Run the Nextcloud upgrade
-  ansible.builtin.command: occ upgrade --no-interaction
+  ansible.builtin.command: php occ upgrade --no-interaction
   args:
     chdir: "{{ nextcloud_install_dir }}"
   become: true
@@ -103,7 +103,7 @@
   changed_when: true
 
 - name: Turn off maintenance mode
-  ansible.builtin.command: occ maintenance:mode --off
+  ansible.builtin.command: php occ maintenance:mode --off
   args:
     chdir: "{{ nextcloud_install_dir }}"
   become: true

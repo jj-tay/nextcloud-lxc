@@ -174,7 +174,7 @@
 
 - name: Check whether Nextcloud is already installed
   ansible.builtin.command: >-
-    occ status --output=json
+    php occ status --output=json
   args:
     chdir: "{{ nextcloud_install_dir }}"
   become: true
@@ -185,7 +185,7 @@
 
 - name: Run first-time Nextcloud install
   ansible.builtin.command: >-
-    occ maintenance:install
+    php occ maintenance:install
     --database mysql
     --database-name {{ nextcloud_db_name }}
     --database-user {{ nextcloud_db_user }}
@@ -202,7 +202,7 @@
 
 - name: Set the trusted domain
   ansible.builtin.command: >-
-    occ config:system:set trusted_domains 1 --value={{ nextcloud_domain }}
+    php occ config:system:set trusted_domains 1 --value={{ nextcloud_domain }}
   args:
     chdir: "{{ nextcloud_install_dir }}"
   become: true
@@ -211,7 +211,7 @@
 
 - name: Set the CLI/cron URL
   ansible.builtin.command: >-
-    occ config:system:set overwrite.cli.url --value=https://{{ nextcloud_domain }}
+    php occ config:system:set overwrite.cli.url --value=https://{{ nextcloud_domain }}
   args:
     chdir: "{{ nextcloud_install_dir }}"
   become: true
@@ -226,8 +226,8 @@
   become_user: www-data
   changed_when: true
   loop:
-    - "occ config:system:set trusted_proxies 0 --value={{ nextcloud_trusted_proxy_ip }}"
-    - "occ config:system:set overwriteprotocol --value=https"
+    - "php occ config:system:set trusted_proxies 0 --value={{ nextcloud_trusted_proxy_ip }}"
+    - "php occ config:system:set overwriteprotocol --value=https"
 
 - name: Configure Redis for distributed caching and file locking
   ansible.builtin.command: "{{ item }}"
@@ -237,13 +237,13 @@
   become_user: www-data
   changed_when: true
   loop:
-    - "occ config:system:set memcache.local --value='\\OC\\Memcache\\APCu'"
-    - "occ config:system:set memcache.locking --value='\\OC\\Memcache\\Redis'"
-    - "occ config:system:set redis host --value=/run/redis/redis-server.sock"
-    - "occ config:system:set redis port --value=0 --type=integer"
+    - "php occ config:system:set memcache.local --value='\\OC\\Memcache\\APCu'"
+    - "php occ config:system:set memcache.locking --value='\\OC\\Memcache\\Redis'"
+    - "php occ config:system:set redis host --value=/run/redis/redis-server.sock"
+    - "php occ config:system:set redis port --value=0 --type=integer"
 
 - name: Set background jobs to run via cron
-  ansible.builtin.command: occ background:cron
+  ansible.builtin.command: php occ background:cron
   args:
     chdir: "{{ nextcloud_install_dir }}"
   become: true
