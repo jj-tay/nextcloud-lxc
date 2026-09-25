@@ -5,7 +5,7 @@
 # live in group_vars/all/main.yml, not here.
 
 # --- Where the container lives ---
-proxmox_lxc_node: pve
+proxmox_lxc_node: proxmox
 proxmox_lxc_hostname: nextcloud
 
 # --- Sizing ---
