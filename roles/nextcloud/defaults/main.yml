@@ -7,7 +7,32 @@
 
 # --- Environment placeholders (fill in per environment) ---
 nextcloud_domain: nextcloud.home.blueyak.net
+
+# --- Data directory: TrueNAS NFS -> Proxmox host -> bind mount into the LXC ---
+# NFS cannot be mounted inside an unprivileged LXC (NFS has no user
+# namespace support, so mount(2) fails with EPERM whatever the AppArmor
+# profile or feature flags). The Proxmox HOST mounts the export instead
+# (tasks/host_nfs.yml), and that path is bind-mounted into the container as a
+# Proxmox mount point.
+#
+# Container-side path: where Nextcloud actually sees its data (the bind
+# mount target, and occ's --data-dir).
 nextcloud_data_mount: /mnt/ncdata
+# Host-side NFS mount point: where the Proxmox host mounts
+# truenas_nfs_host:truenas_nfs_export (persisted in the host's /etc/fstab).
+# Never referenced inside the container.
+nextcloud_host_nfs_mount: /mnt/nextcloud-data
+# NFS mount options on the host. _netdev: at boot, delay the mount until the
+# network (incl. vmbr1) is up.
+nextcloud_host_nfs_opts: "rw,soft,noatime,_netdev"
+# Proxmox mount point key (mpN) that bind-mounts nextcloud_host_nfs_mount to
+# nextcloud_data_mount in the LXC.
+nextcloud_data_mp: mp0
+# The Proxmox host's own static IP on vmbr1 (on the bridge itself, no
+# gateway), so the host can reach TrueNAS over the isolated storage link.
+# Not the LXC's vmbr1 IP (nextcloud_vmbr1_ip) or TrueNAS's (truenas_nfs_host).
+proxmox_host_vmbr1_ip: 10.10.10.1/24
+
 # truenas_nfs_host: must be the TrueNAS VM's vmbr1 address, NOT its LAN IP —
 # NFS traffic has to ride the isolated vmbr1 link.
 truenas_nfs_host: 10.10.10.10
@@ -17,8 +42,22 @@ truenas_nfs_export: /mnt/tank/nextcloud
 # nextcloud-nfs:1000 and nextcloud-nfs:3000 on the TrueNAS side — TrueNAS
 # auto-created the group at 3000, so UID and GID deliberately differ).
 # A mismatch causes file permission errors on the NFS-mounted data directory.
+#
+# idmap carve-out: the Proxmox HOST mounts the export, so files show up on
+# the host as 1000:3000. An unprivileged LXC normally maps container ID N to
+# host 100000+N, which would make them nobody:nogroup inside the container.
+# tasks/host_idmap.yml therefore maps exactly this one UID and one GID 1:1
+# (container 1000 = host 1000, container 3000 = host 3000; everything else
+# keeps the 100000 offset), via lxc.idmap in /etc/pve/lxc/<vmid>.conf plus
+# root:1000:1 / root:3000:1 in the host's /etc/subuid and /etc/subgid.
+# Side effect: www-data in the container IS host UID 1000 / GID 3000, so
+# keep those IDs unused on the Proxmox host. Changing these values after the
+# idmap is applied makes the play fail loudly rather than rewrite the map.
 nextcloud_www_data_uid: 1000
 nextcloud_www_data_gid: 3000
+# Host ID where the container's default (shifted) mapping starts; Proxmox's
+# standard for unprivileged containers.
+nextcloud_lxc_idmap_base: 100000
 proxmox_host: 192.168.10.50
 
 # --- Reverse proxy (Nginx Proxy Manager terminates TLS in front of this LXC) ---

@@ -1,0 +1,69 @@
+---
+# Static IP for the Proxmox HOST on the vmbr1 bridge, so the host itself can
+# mount the TrueNAS NFS export over the isolated storage link (the LXC can't:
+# see tasks/host_nfs.yml).
+#
+# Persisted in the host's /etc/network/interfaces (the same file the Proxmox
+# GUI writes) with interfaces_file, which only edits the vmbr1 stanza's
+# method/address/gateway lines and reports changed only when one was wrong.
+# gateway is always removed so vmbr0 keeps the host's only default route.
+# The live interface is only reloaded (`ifup`, vmbr1 only) when the file
+# changed or the address is not actually up.
+
+- name: Read the Proxmox host's current vmbr1 addresses
+  ansible.builtin.command: ip -4 -o addr show dev {{ nextcloud_vmbr1_bridge }}
+  delegate_to: "{{ groups['proxmox'][0] }}"
+  register: nextcloud_host_vmbr1_addr
+  changed_when: false
+  failed_when: false
+
+- name: Fail loudly if the vmbr1 bridge does not exist on the Proxmox host
+  ansible.builtin.assert:
+    that:
+      - nextcloud_host_vmbr1_addr.rc == 0
+    fail_msg: >-
+      The Proxmox host has no {{ nextcloud_vmbr1_bridge }} interface
+      ({{ nextcloud_host_vmbr1_addr.stderr | default('') }}). Create the
+      bridge in Proxmox first — see Prerequisites in the README.
+
+- name: Set a static vmbr1 IP on the Proxmox host (no gateway)
+  community.general.interfaces_file:
+    dest: /etc/network/interfaces
+    iface: "{{ nextcloud_vmbr1_bridge }}"
+    address_family: inet
+    option: "{{ item.option }}"
+    value: "{{ item.value | default(omit) }}"
+    state: "{{ item.state | default('present') }}"
+    backup: true
+  delegate_to: "{{ groups['proxmox'][0] }}"
+  register: nextcloud_host_vmbr1_file
+  loop:
+    - { option: method, value: static }
+    - { option: address, value: "{{ proxmox_host_vmbr1_ip }}" }
+    - { option: gateway, state: absent }
+
+- name: Apply the vmbr1 config on the Proxmox host
+  ansible.builtin.command: ifup {{ nextcloud_vmbr1_bridge }}
+  delegate_to: "{{ groups['proxmox'][0] }}"
+  when: >-
+    nextcloud_host_vmbr1_file is changed
+    or ('inet ' ~ proxmox_host_vmbr1_ip ~ ' ') not in nextcloud_host_vmbr1_addr.stdout
+  changed_when: true
+
+- name: Wait for the Proxmox host's vmbr1 IP to be up
+  ansible.builtin.command: ip -4 -o addr show dev {{ nextcloud_vmbr1_bridge }}
+  delegate_to: "{{ groups['proxmox'][0] }}"
+  register: nextcloud_host_vmbr1_addr_after
+  until: ('inet ' ~ proxmox_host_vmbr1_ip ~ ' ') in nextcloud_host_vmbr1_addr_after.stdout
+  retries: 12
+  delay: 5
+  changed_when: false
+
+# The host mount in host_nfs.yml must not race the address coming up, so
+# block until TrueNAS answers on the NFS port over this link.
+- name: Wait for TrueNAS NFS to answer the Proxmox host over vmbr1
+  ansible.builtin.wait_for:
+    host: "{{ truenas_nfs_host }}"
+    port: 2049
+    timeout: 60
+  delegate_to: "{{ groups['proxmox'][0] }}"

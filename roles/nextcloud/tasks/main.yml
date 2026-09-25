@@ -17,33 +17,22 @@
     shell: /usr/sbin/nologin
     create_home: false
 
-- name: Configure the vmbr1 storage NIC and wait for it before mounting NFS
+- name: Configure the LXC's vmbr1 storage NIC
   ansible.builtin.import_tasks: network.yml
 
-- name: Install NFS client
-  ansible.builtin.apt:
-    name: nfs-common
-    state: present
-    update_cache: true
-    cache_valid_time: 3600
+# Restarts the LXC once, the first time only (idmap needs a stopped CT).
+- name: Map www-data's UID/GID 1:1 between the Proxmox host and the LXC
+  ansible.builtin.import_tasks: host_idmap.yml
 
-- name: Create data mount point
-  ansible.builtin.file:
-    path: "{{ nextcloud_data_mount }}"
-    state: directory
-    owner: www-data
-    group: www-data
-    mode: "0750"
+- name: Give the Proxmox host its vmbr1 IP and wait for TrueNAS NFS
+  ansible.builtin.import_tasks: host_network.yml
 
-- name: Mount Nextcloud data directory from TrueNAS
-  ansible.posix.mount:
-    path: "{{ nextcloud_data_mount }}"
-    src: "{{ truenas_nfs_host }}:{{ truenas_nfs_export }}"
-    fstype: nfs
-    # _netdev: at boot, delay this mount until the network (incl. vmbr1) is up.
-    opts: "rw,soft,noatime,_netdev"
-    state: mounted
+# Must stay before occ maintenance:install (--data-dir) further down.
+- name: Mount NFS on the Proxmox host and bind-mount it into the LXC
+  ansible.builtin.import_tasks: host_nfs.yml
 
+# A bind mount keeps the source's fstype, so this sees nfs/nfs4 inside the
+# LXC only if the host mount was live when the container started.
 - name: Verify the data directory is actually an NFS mount
   ansible.builtin.command: findmnt --target {{ nextcloud_data_mount }} --output FSTYPE --noheadings
   register: nextcloud_data_fstype
