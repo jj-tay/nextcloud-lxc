@@ -77,6 +77,9 @@
     - name: Start the LXC (no-op if already running)
       community.proxmox.proxmox:
         vmid: "{{ nextcloud_lxc_vmid }}"
+        # Not needed to identify the container, but without it the module
+        # fails with "An error occurred: 'name'" on state: started.
+        hostname: "{{ proxmox_lxc_hostname }}"
         timeout: 120
         state: started
 
