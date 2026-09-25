@@ -1,0 +1,76 @@
+---
+# Static IP for the LXC's vmbr1 NIC (the isolated NFS link to TrueNAS).
+#
+# Set on the Proxmox side with `pct set`, not inside the container: Proxmox
+# regenerates the container's network config from its netN entries on every
+# boot, so anything written inside the LXC would be overwritten. Existing NIC
+# settings (name, bridge, hwaddr, ...) are carried over as-is so the MAC never
+# changes, and gw= is always stripped so the LAN NIC keeps the only default
+# route. `pct set` is only run when the IP is wrong or a gateway is present.
+
+- name: Read the LXC's Proxmox config
+  ansible.builtin.command: pct config {{ nextcloud_lxc_vmid }}
+  delegate_to: "{{ groups['proxmox'][0] }}"
+  register: nextcloud_pct_config
+  changed_when: false
+
+- name: Parse the existing vmbr1 NIC definition
+  ansible.builtin.set_fact:
+    nextcloud_vmbr1_current: >-
+      {{ dict(nextcloud_pct_config.stdout_lines
+              | select('match', '^' ~ nextcloud_vmbr1_netif ~ ': ')
+              | map('regex_replace', '^[^:]+: ', '')
+              | first | default('')
+              | split(',') | select
+              | map('split', '=', 1) | list) }}
+
+- name: Fail loudly if the vmbr1 NIC is missing or on the wrong bridge
+  ansible.builtin.assert:
+    that:
+      - nextcloud_vmbr1_current.bridge | default('') == nextcloud_vmbr1_bridge
+      - nextcloud_vmbr1_current.name is defined
+    fail_msg: >-
+      LXC {{ nextcloud_lxc_vmid }} has no {{ nextcloud_vmbr1_netif }} NIC on
+      {{ nextcloud_vmbr1_bridge }} (found: {{ nextcloud_vmbr1_current }}).
+      Add it in Proxmox first — see Prerequisites in the README.
+
+- name: Build the desired vmbr1 NIC definition (static IP, no gateway)
+  ansible.builtin.set_fact:
+    nextcloud_vmbr1_desired: >-
+      {{ nextcloud_vmbr1_current
+         | combine({'ip': nextcloud_vmbr1_ip})
+         | dict2items | rejectattr('key', 'equalto', 'gw') | items2dict }}
+
+- name: Set the vmbr1 NIC static IP via pct (no gateway)
+  ansible.builtin.command: >-
+    pct set {{ nextcloud_lxc_vmid }} -{{ nextcloud_vmbr1_netif }}
+    {{ nextcloud_vmbr1_desired.items() | map('join', '=') | join(',') | quote }}
+  delegate_to: "{{ groups['proxmox'][0] }}"
+  when: >-
+    nextcloud_vmbr1_current.ip | default('') != nextcloud_vmbr1_ip
+    or 'gw' in nextcloud_vmbr1_current
+  changed_when: true
+
+# The mount in main.yml must not race the NIC coming up (e.g. right after the
+# `pct set` above, or on a freshly booted container), so block until the
+# address is live and TrueNAS answers on the NFS port over this link.
+- name: Wait for the vmbr1 IP to be up in the LXC
+  ansible.builtin.command: ip -4 -o addr show dev {{ nextcloud_vmbr1_current.name }}
+  register: nextcloud_vmbr1_addr
+  until: nextcloud_vmbr1_ip in nextcloud_vmbr1_addr.stdout
+  retries: 12
+  delay: 5
+  changed_when: false
+
+- name: Check the default route does not use the vmbr1 NIC
+  ansible.builtin.command: ip -4 route show default
+  register: nextcloud_default_route
+  changed_when: false
+  failed_when: >-
+    ('dev ' ~ nextcloud_vmbr1_current.name ~ ' ') in (nextcloud_default_route.stdout ~ ' ')
+
+- name: Wait for TrueNAS NFS to answer over vmbr1
+  ansible.builtin.wait_for:
+    host: "{{ truenas_nfs_host }}"
+    port: 2049
+    timeout: 60
