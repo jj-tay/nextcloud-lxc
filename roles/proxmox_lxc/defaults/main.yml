@@ -1,0 +1,62 @@
+---
+# Non-secret provisioning settings for the Nextcloud LXC. Proxmox API
+# credentials live in group_vars/all/vault.yml (vault_proxmox_api_*). The
+# VMID and the vmbr1 NIC settings are shared with the nextcloud role, so they
+# live in group_vars/all/main.yml, not here.
+
+# --- Where the container lives ---
+proxmox_lxc_node: pve
+proxmox_lxc_hostname: nextcloud
+
+# --- Sizing ---
+proxmox_lxc_cores: 2
+proxmox_lxc_memory: 4096   # MiB
+proxmox_lxc_swap: 512      # MiB
+proxmox_lxc_rootfs_storage: local-lvm
+proxmox_lxc_rootfs_size: 16   # GiB. OS + Nextcloud code only; user data is on NFS.
+
+# --- OS template ---
+# Debian 13, to match the nextcloud role (PHP 8.4 is Debian 13's default PHP;
+# Debian 12 only ships 8.2). The role downloads it to the storage below if it
+# is not there yet. Check the exact current name with:
+#   pveam update && pveam available --section system | grep debian-13
+proxmox_lxc_template_storage: local
+proxmox_lxc_template: debian-13-standard_13.1-2_amd64.tar.zst
+proxmox_lxc_ostemplate: "{{ proxmox_lxc_template_storage }}:vztmpl/{{ proxmox_lxc_template }}"
+
+# --- LAN NIC (net0) ---
+proxmox_lxc_lan_netif: net0
+proxmox_lxc_lan_ifname: eth0
+proxmox_lxc_lan_bridge: vmbr0
+# Pin the MAC so the UniFi DHCP reservation for nextcloud_lxc_host keeps
+# matching, even if the container is destroyed and recreated. Leave empty to
+# let Proxmox pick a random one (then create the reservation for that MAC
+# after the first run). Proxmox's own prefix is BC:24:11.
+proxmox_lxc_lan_hwaddr: ""
+
+# --- Storage NIC (vmbr1) ---
+# Interface name inside the container. The netN key, bridge and IP come from
+# nextcloud_vmbr1_netif / nextcloud_vmbr1_bridge / nextcloud_vmbr1_ip.
+proxmox_lxc_vmbr1_ifname: eth1
+
+# --- Misc ---
+proxmox_lxc_onboot: true
+# nesting=1 is what the Proxmox GUI sets by default for current Debian
+# templates (systemd needs it). An API token may set nesting on an
+# unprivileged container; any other feature flag needs root@pam.
+proxmox_lxc_features:
+  - nesting=1
+
+# Public key put in the container's /root/.ssh/authorized_keys at creation
+# time, so the nextcloud play can SSH in as root. Read on the Ansible
+# controller.
+proxmox_lxc_ssh_pubkey_file: ~/.ssh/id_ed25519.pub
+
+# Most homelab Proxmox hosts use the self-signed certificate. Set to true
+# once the API has a trusted certificate.
+proxmox_lxc_api_validate_certs: false
+
+# How long to wait for DHCP to hand out a LAN IP, and then for sshd to answer.
+proxmox_lxc_ip_wait_retries: 30
+proxmox_lxc_ip_wait_delay: 5
+proxmox_lxc_ssh_timeout: 300

@@ -1,10 +1,11 @@
 ---
 # Non-secret configuration. Secrets live in group_vars/all/vault.yml.
 
+# Shared with the proxmox_lxc role, so defined in group_vars/all/main.yml
+# instead: nextcloud_lxc_vmid, nextcloud_lxc_host, nextcloud_vmbr1_netif,
+# nextcloud_vmbr1_bridge, nextcloud_vmbr1_ip.
+
 # --- Environment placeholders (fill in per environment) ---
-# nextcloud_lxc_host: assign this as a UniFi Fixed IP (DHCP reservation) for
-# the LXC's MAC address before the first run.
-nextcloud_lxc_host: 192.168.10.51
 nextcloud_domain: nextcloud.home.blueyak.net
 nextcloud_data_mount: /mnt/ncdata
 # truenas_nfs_host: must be the TrueNAS VM's vmbr1 address, NOT its LAN IP —
@@ -15,15 +16,6 @@ truenas_nfs_export: /mnt/tank/nextcloud
 # dedicated UID-1000 user, e.g. "ncdata", on TrueNAS and set it as Mapall).
 nextcloud_www_data_uid: 1000
 proxmox_host: 192.168.10.50
-nextcloud_lxc_vmid: 104
-
-# --- Storage network (vmbr1: internal-only, no gateway) ---
-# The LXC's NIC on vmbr1 (Proxmox netN key) and its static IP, applied via
-# `pct set` on the Proxmox host (see tasks/network.yml). No gateway is ever
-# set on this NIC, so the LAN NIC keeps the only default route.
-nextcloud_vmbr1_netif: net1
-nextcloud_vmbr1_bridge: vmbr1
-nextcloud_vmbr1_ip: 10.10.10.11/24
 
 # --- Reverse proxy (Nginx Proxy Manager terminates TLS in front of this LXC) ---
 nextcloud_trusted_proxy_ip: 192.168.10.59
