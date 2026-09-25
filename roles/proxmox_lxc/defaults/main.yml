@@ -42,10 +42,13 @@ proxmox_lxc_vmbr1_ifname: eth1
 # --- Misc ---
 proxmox_lxc_onboot: true
 # nesting=1 is what the Proxmox GUI sets by default for current Debian
-# templates (systemd needs it). An API token may set nesting on an
-# unprivileged container; any other feature flag needs root@pam.
+# templates (systemd needs it). mount=nfs lets the unprivileged container
+# mount NFS shares, which AppArmor blocks otherwise. An API token may set
+# nesting on an unprivileged container; any other feature flag (including
+# mount=nfs) needs root@pam.
 proxmox_lxc_features:
   - nesting=1
+  - mount=nfs
 
 # Public key put in the container's /root/.ssh/authorized_keys at creation
 # time, so the nextcloud play can SSH in as root. Read on the Ansible
