@@ -17,7 +17,11 @@ TrueNAS 10.10.10.10:/mnt/tank/nextcloud
 ```
 
 The playbook sets all of this up (host vmbr1 IP, host NFS mount, `mp0`).
-The LXC keeps only the `nesting=1` feature flag.
+The LXC keeps only the `nesting=1` feature flag. So that the files TrueNAS
+hands out as `1000:3000` show up as `www-data` inside the unprivileged LXC
+(rather than `nobody:nogroup`), the playbook also maps exactly that UID
+and GID 1:1 between host and container with `lxc.idmap`; every other ID
+keeps the usual `100000` offset.
 
 Design background: `docs/superpowers/specs/2026-09-09-nextcloud-lxc-design.md`.
 
@@ -75,6 +79,13 @@ own vmbr1 IP, but never creates bridges and never touches TrueNAS.
    - mounts `truenas_nfs_host:truenas_nfs_export` at
      `nextcloud_host_nfs_mount` (default `/mnt/nextcloud-data`) and
      persists it in the host's `/etc/fstab`,
+   - adds `root:1000:1` / `root:3000:1` to `/etc/subuid` / `/etc/subgid`
+     and the `lxc.idmap` carve-out to `/etc/pve/lxc/<vmid>.conf`. Only
+     the first time: the LXC is shut down, files it already owns as
+     www-data (host `101000` / `103000`) are re-owned to `1000` / `3000`,
+     and it is started again. Pre-existing, different `lxc.idmap` lines
+     make the play fail rather than be overwritten. Keep UID `1000` / GID
+     `3000` unused on the Proxmox host itself.
    - reads the LXC's config with `pct config` and uses `pct set` to fix
      the LXC's vmbr1 IP and the `mp0` bind mount
      (`nextcloud_host_nfs_mount` → `nextcloud_data_mount`). If `mp0` had
@@ -140,9 +151,9 @@ ansible-playbook playbook.yml --ask-vault-pass
 Safe to run repeatedly, including immediately after an upgrade — every
 step is guarded so a re-run only confirms existing state. An existing
 container at the VMID is never recreated by the provision play; it only
-checks that it is named `proxmox_lxc_hostname` and is running. The one
-restart the install play can do is when the `mp0` bind mount was missing
-or wrong.
+checks that it is named `proxmox_lxc_hostname` and is running. The
+install play only restarts the LXC when it first applies the `lxc.idmap`
+carve-out or when the `mp0` bind mount was missing or wrong.
 Changing sizing variables later does **not** resize an existing container;
 do that in Proxmox.
 
@@ -166,6 +177,23 @@ turn maintenance mode back off. If any step fails, the play halts with
 maintenance mode still on — roll back using the Proxmox snapshot taken
 at the start of the run.
 
+### After a Proxmox host reboot
+
+**Known limitation:** TrueNAS is a VM on the same host, so at boot the
+host's fstab NFS mount runs before TrueNAS is up and fails, and the LXC
+(`onboot`) can start with the *empty* host directory bind-mounted at
+`/mnt/ncdata`. After any Proxmox host reboot, once TrueNAS is up, re-run
+the playbook before assuming Nextcloud is healthy:
+
+```bash
+ansible-playbook playbook.yml --ask-vault-pass
+```
+
+It mounts the export on the host and fails loudly if `/mnt/ncdata` is
+still not NFS-backed inside the LXC. If it fails on that check, restart
+the LXC (`pct reboot <vmid>`) so it picks up the now-live host mount,
+then re-run.
+
 ## Repo layout
 
 ```
@@ -180,6 +208,7 @@ nextcloud-lxc/
 ├── roles/nextcloud/
 │   ├── tasks/main.yml                 # idempotent install
 │   ├── tasks/network.yml              # LXC's vmbr1 NIC IP (via pct), imported by main.yml
+│   ├── tasks/host_idmap.yml           # 1:1 www-data UID/GID lxc.idmap, imported by main.yml
 │   ├── tasks/host_network.yml         # Proxmox host's vmbr1 IP, imported by main.yml
 │   ├── tasks/host_nfs.yml             # host NFS mount + mp0 bind mount, imported by main.yml
 │   ├── tasks/upgrade.yml              # tagged 'upgrade'

@@ -42,8 +42,22 @@ truenas_nfs_export: /mnt/tank/nextcloud
 # nextcloud-nfs:1000 and nextcloud-nfs:3000 on the TrueNAS side — TrueNAS
 # auto-created the group at 3000, so UID and GID deliberately differ).
 # A mismatch causes file permission errors on the NFS-mounted data directory.
+#
+# idmap carve-out: the Proxmox HOST mounts the export, so files show up on
+# the host as 1000:3000. An unprivileged LXC normally maps container ID N to
+# host 100000+N, which would make them nobody:nogroup inside the container.
+# tasks/host_idmap.yml therefore maps exactly this one UID and one GID 1:1
+# (container 1000 = host 1000, container 3000 = host 3000; everything else
+# keeps the 100000 offset), via lxc.idmap in /etc/pve/lxc/<vmid>.conf plus
+# root:1000:1 / root:3000:1 in the host's /etc/subuid and /etc/subgid.
+# Side effect: www-data in the container IS host UID 1000 / GID 3000, so
+# keep those IDs unused on the Proxmox host. Changing these values after the
+# idmap is applied makes the play fail loudly rather than rewrite the map.
 nextcloud_www_data_uid: 1000
 nextcloud_www_data_gid: 3000
+# Host ID where the container's default (shifted) mapping starts; Proxmox's
+# standard for unprivileged containers.
+nextcloud_lxc_idmap_base: 100000
 proxmox_host: 192.168.10.50
 
 # --- Reverse proxy (Nginx Proxy Manager terminates TLS in front of this LXC) ---
