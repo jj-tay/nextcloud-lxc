@@ -11,16 +11,17 @@
 #
 # The lxc.idmap lines are written into the main section of
 # /etc/pve/lxc/<vmid>.conf (Proxmox has no `pct set` option for raw lxc.*
-# keys) as one blockinfile block between BEGIN/END markers, and only when
-# the main section has no lxc.idmap lines at all. Existing, different idmap
-# lines are never overwritten: the play fails instead.
+# keys) as plain lines, and only when the main section has no lxc.idmap
+# lines at all. Existing, different idmap lines are never overwritten: the
+# play fails instead.
 #
-# The gate is the idmap lines themselves, not the markers: Proxmox treats
-# `#` lines in a guest config as its description and, on any config rewrite
-# (pct set, lock/unlock for backups or snapshots, GUI edits), moves them to
-# the top of the file. The markers can therefore end up detached from the
-# lines they bracketed, and blockinfile alone would then add the block a
-# second time; duplicate idmap entries stop the container from starting.
+# No `#` marker lines (blockinfile) are used: Proxmox treats `#` lines in a
+# guest config as the container's description, and on every config rewrite
+# (start/stop, pct set, lock/unlock for backups or snapshots, GUI edits) it
+# URL-encodes them (`:` -> `%3A`) and moves them to the top of the file.
+# Markers then no longer match, blockinfile adds the block again, and the
+# duplicate idmap entries stop the container from starting. The gate is the
+# idmap lines themselves, which Proxmox leaves alone.
 #
 # Applying the map needs the container stopped, and files the container
 # already owns as www-data (host 100000+uid / 100000+gid) are re-owned to
@@ -55,12 +56,16 @@
   register: nextcloud_lxc_conf
 
 # Only the main section counts: snapshot sections ([name]) follow it.
+# No split('\n') here: Ansible escapes backslashes in Jinja string literals,
+# so '\n' is a literal backslash-n outside a regex, and the split would never
+# find the lines (the gate would then re-add them on every run). Inside a
+# regex the escape still means newline, so regex_findall is safe.
 - name: Parse the idmap in the main section of the LXC config
   ansible.builtin.set_fact:
     nextcloud_idmap_current: >-
       {{ nextcloud_lxc_conf.content | b64decode
          | regex_replace('(?s)\n\[.*$', '')
-         | split('\n') | select('match', '^lxc\.idmap:') | list }}
+         | regex_findall('(?m)^lxc\.idmap:.*$') }}
 
 - name: Fail loudly if the LXC already has a different idmap
   ansible.builtin.assert:
@@ -108,8 +113,8 @@
           changed_when: true
           when: nextcloud_pct_mount is succeeded
 
-    # Re-read: `pct mount`/`unmount` touch the config (lock), so place the
-    # block against what is there now. Written last, so a failure above
+    # Re-read: `pct mount`/`unmount` touch the config (lock), so build the
+    # new file from what is there now. Written last, so a failure above
     # leaves the idmap missing and the next run redoes the whole step.
     - name: Re-read the LXC's Proxmox config file
       ansible.builtin.slurp:
@@ -117,27 +122,29 @@
       delegate_to: "{{ groups['proxmox'][0] }}"
       register: nextcloud_lxc_conf_stopped
 
-    # The block must land in the main section, i.e. before the first
+    # The lines must land in the main section, i.e. before the first
     # snapshot section header ([name]) if there is one, else at the end.
-    # blockinfile's insertbefore uses the LAST regex match, so match that
-    # first header line exactly (section names are unique).
+    # The whole file is rewritten in one go (main section + idmap lines +
+    # snapshot sections unchanged), so all six lines appear or none do.
     # No mode/owner: pmxcfs fixes those itself for files under /etc/pve.
-    - name: Write the idmap block into the main section of the LXC config  # noqa: risky-file-permissions
-      ansible.builtin.blockinfile:
-        path: /etc/pve/lxc/{{ nextcloud_lxc_vmid }}.conf
-        marker: "# {mark} ANSIBLE MANAGED BLOCK: nextcloud www-data idmap"
-        block: "{{ nextcloud_idmap_desired | join('\n') }}"
-        insertbefore: >-
-          {{ ('^' ~ (nextcloud_conf_first_section | regex_escape) ~ '$')
-             if nextcloud_conf_first_section else omit }}
+    - name: Append the idmap lines to the main section of the LXC config  # noqa: risky-file-permissions
+      ansible.builtin.copy:
+        dest: /etc/pve/lxc/{{ nextcloud_lxc_vmid }}.conf
+        content: >-
+          {{ (nextcloud_conf_main | regex_replace('\n*\Z', ''))
+             ~ nextcloud_nl ~ (nextcloud_idmap_desired | join(nextcloud_nl))
+             ~ nextcloud_nl ~ nextcloud_conf_text[nextcloud_conf_main | length:] }}
         # /etc/pve is pmxcfs, which refuses some of the ownership calls
         # Ansible makes around its atomic rename.
         unsafe_writes: true
       delegate_to: "{{ groups['proxmox'][0] }}"
       vars:
-        nextcloud_conf_first_section: >-
-          {{ nextcloud_lxc_conf_stopped.content | b64decode
-             | regex_search('(?m)^\[.*\]$') | default('', true) }}
+        # A real newline (YAML double-quoted escape); '\n' inside Jinja
+        # would be a literal backslash-n, see the parse task above.
+        nextcloud_nl: "\n"
+        nextcloud_conf_text: "{{ nextcloud_lxc_conf_stopped.content | b64decode }}"
+        nextcloud_conf_main: >-
+          {{ nextcloud_conf_text | regex_replace('(?s)\n\[.*$', '') }}
 
     - name: Start the LXC with the new idmap
       ansible.builtin.command: pct start {{ nextcloud_lxc_vmid }}
