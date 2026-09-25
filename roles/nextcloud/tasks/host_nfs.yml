@@ -1,0 +1,82 @@
+---
+# Nextcloud data directory: TrueNAS NFS export -> Proxmox host -> LXC.
+#
+# NFS can't be mounted inside the unprivileged LXC (NFS has no user
+# namespace support; mount(2) fails with EPERM regardless of AppArmor or
+# feature flags). So the Proxmox HOST mounts the export (persisted in the
+# host's /etc/fstab), and that path is bind-mounted into the container as a
+# Proxmox mount point with `pct set`. Bind mounts of host paths can only be
+# set by root@pam, which is why this is `pct` over SSH and not part of the
+# API-token-driven proxmox_lxc role.
+
+- name: Ensure nfs-common is installed on the Proxmox host
+  ansible.builtin.package:
+    name: nfs-common
+    state: present
+  delegate_to: "{{ groups['proxmox'][0] }}"
+
+# No owner/mode on purpose: once mounted this path is the root of the TrueNAS
+# dataset, and its permissions belong to TrueNAS, not to this play.
+- name: Ensure the NFS mount point exists on the Proxmox host  # noqa: risky-file-permissions
+  ansible.builtin.file:
+    path: "{{ nextcloud_host_nfs_mount }}"
+    state: directory
+  delegate_to: "{{ groups['proxmox'][0] }}"
+
+- name: Mount the TrueNAS export on the Proxmox host (and persist in fstab)
+  ansible.posix.mount:
+    path: "{{ nextcloud_host_nfs_mount }}"
+    src: "{{ truenas_nfs_host }}:{{ truenas_nfs_export }}"
+    fstype: nfs
+    opts: "{{ nextcloud_host_nfs_opts }}"
+    state: mounted
+  delegate_to: "{{ groups['proxmox'][0] }}"
+
+- name: Verify the host mount point is actually NFS-backed
+  ansible.builtin.command: findmnt --target {{ nextcloud_host_nfs_mount }} --output FSTYPE --noheadings
+  delegate_to: "{{ groups['proxmox'][0] }}"
+  register: nextcloud_host_nfs_fstype
+  changed_when: false
+  failed_when: "'nfs' not in nextcloud_host_nfs_fstype.stdout"
+
+- name: Read the LXC's Proxmox config (mount points)
+  ansible.builtin.command: pct config {{ nextcloud_lxc_vmid }}
+  delegate_to: "{{ groups['proxmox'][0] }}"
+  register: nextcloud_pct_config_mp
+  changed_when: false
+
+# `mp0: /mnt/nextcloud-data,mp=/mnt/ncdata` -> ['/mnt/nextcloud-data', 'mp=/mnt/ncdata']
+- name: Parse the existing data mount point
+  ansible.builtin.set_fact:
+    nextcloud_data_mp_current: >-
+      {{ nextcloud_pct_config_mp.stdout_lines
+         | select('match', '^' ~ nextcloud_data_mp ~ ': ')
+         | map('regex_replace', '^[^:]+: ', '')
+         | first | default('')
+         | split(',') }}
+
+- name: Bind-mount the host NFS path into the LXC via pct
+  ansible.builtin.command: >-
+    pct set {{ nextcloud_lxc_vmid }} -{{ nextcloud_data_mp }}
+    {{ (nextcloud_host_nfs_mount ~ ',mp=' ~ nextcloud_data_mount) | quote }}
+  delegate_to: "{{ groups['proxmox'][0] }}"
+  register: nextcloud_data_mp_set
+  when: >-
+    nextcloud_data_mp_current | first != nextcloud_host_nfs_mount
+    or ('mp=' ~ nextcloud_data_mount) not in nextcloud_data_mp_current
+  changed_when: true
+
+# Mount point changes only take effect on a container restart. Done inline,
+# not via a handler, because the bind mount has to be live before
+# occ maintenance:install references the data directory later in main.yml.
+- name: Restart the LXC so the new mount point takes effect  # noqa: no-handler
+  ansible.builtin.command: pct reboot {{ nextcloud_lxc_vmid }}
+  delegate_to: "{{ groups['proxmox'][0] }}"
+  when: nextcloud_data_mp_set is changed
+  changed_when: true
+
+- name: Wait for the LXC to come back after the restart  # noqa: no-handler
+  ansible.builtin.wait_for_connection:
+    delay: 5
+    timeout: 300
+  when: nextcloud_data_mp_set is changed

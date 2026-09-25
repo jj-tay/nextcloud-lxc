@@ -1,5 +1,5 @@
 ---
-# Static IP for the LXC's vmbr1 NIC (the isolated NFS link to TrueNAS).
+# Static IP for the LXC's vmbr1 NIC (the isolated storage link to TrueNAS).
 #
 # Set on the Proxmox side with `pct set`, not inside the container: Proxmox
 # regenerates the container's network config from its netN entries on every
@@ -51,9 +51,9 @@
     or 'gw' in nextcloud_vmbr1_current
   changed_when: true
 
-# The mount in main.yml must not race the NIC coming up (e.g. right after the
-# `pct set` above, or on a freshly booted container), so block until the
-# address is live and TrueNAS answers on the NFS port over this link.
+# Block until the address is live (e.g. right after the `pct set` above, or
+# on a freshly booted container). NFS itself is mounted by the Proxmox host
+# (host_nfs.yml), so the LXC no longer needs to reach TrueNAS over this link.
 - name: Wait for the vmbr1 IP to be up in the LXC
   ansible.builtin.command: ip -4 -o addr show dev {{ nextcloud_vmbr1_current.name }}
   register: nextcloud_vmbr1_addr
@@ -68,9 +68,3 @@
   changed_when: false
   failed_when: >-
     ('dev ' ~ nextcloud_vmbr1_current.name ~ ' ') in (nextcloud_default_route.stdout ~ ' ')
-
-- name: Wait for TrueNAS NFS to answer over vmbr1
-  ansible.builtin.wait_for:
-    host: "{{ truenas_nfs_host }}"
-    port: 2049
-    timeout: 60

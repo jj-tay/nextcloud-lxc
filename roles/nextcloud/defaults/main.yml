@@ -7,7 +7,32 @@
 
 # --- Environment placeholders (fill in per environment) ---
 nextcloud_domain: nextcloud.home.blueyak.net
+
+# --- Data directory: TrueNAS NFS -> Proxmox host -> bind mount into the LXC ---
+# NFS cannot be mounted inside an unprivileged LXC (NFS has no user
+# namespace support, so mount(2) fails with EPERM whatever the AppArmor
+# profile or feature flags). The Proxmox HOST mounts the export instead
+# (tasks/host_nfs.yml), and that path is bind-mounted into the container as a
+# Proxmox mount point.
+#
+# Container-side path: where Nextcloud actually sees its data (the bind
+# mount target, and occ's --data-dir).
 nextcloud_data_mount: /mnt/ncdata
+# Host-side NFS mount point: where the Proxmox host mounts
+# truenas_nfs_host:truenas_nfs_export (persisted in the host's /etc/fstab).
+# Never referenced inside the container.
+nextcloud_host_nfs_mount: /mnt/nextcloud-data
+# NFS mount options on the host. _netdev: at boot, delay the mount until the
+# network (incl. vmbr1) is up.
+nextcloud_host_nfs_opts: "rw,soft,noatime,_netdev"
+# Proxmox mount point key (mpN) that bind-mounts nextcloud_host_nfs_mount to
+# nextcloud_data_mount in the LXC.
+nextcloud_data_mp: mp0
+# The Proxmox host's own static IP on vmbr1 (on the bridge itself, no
+# gateway), so the host can reach TrueNAS over the isolated storage link.
+# Not the LXC's vmbr1 IP (nextcloud_vmbr1_ip) or TrueNAS's (truenas_nfs_host).
+proxmox_host_vmbr1_ip: 10.10.10.1/24
+
 # truenas_nfs_host: must be the TrueNAS VM's vmbr1 address, NOT its LAN IP —
 # NFS traffic has to ride the isolated vmbr1 link.
 truenas_nfs_host: 10.10.10.10
