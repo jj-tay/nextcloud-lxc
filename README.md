@@ -184,23 +184,20 @@ Not steps to do, but things to know when something breaks.
   the markers stop matching, the block gets added again, and the
   duplicated idmap lines stop the container from starting. This playbook
   writes them as a plain file rewrite instead (`tasks/host_idmap.yml`).
-- **MariaDB 11.8 on very recent Debian 13 can fail to start** with
-  "Fatal error in defaults handling", from a systemd v254+ / MariaDB
-  packaging incompatibility (MariaDB Jira MDEV-35904). The workaround is
-  a systemd override for `mariadb.service` that sets `MYSQLD_OPTS`,
-  `_WSREP_NEW_CLUSTER` and `_WSREP_START_POSITION` to empty strings, e.g.
-  `/etc/systemd/system/mariadb.service.d/override.conf` in the LXC:
-
-  ```ini
-  [Service]
-  Environment=MYSQLD_OPTS=
-  Environment=_WSREP_NEW_CLUSTER=
-  Environment=_WSREP_START_POSITION=
-  ```
-
-  then `systemctl daemon-reload && systemctl restart mariadb`. **This
-  role does not apply that override yet**; if you hit the error, add it
-  by hand in the LXC and re-run the playbook.
+- **MariaDB "Fatal error in defaults handling" is not MDEV-35904.**
+  This message comes from MariaDB's option-file handling: a defaults file
+  it was told to read is missing or unreadable (e.g.
+  `/etc/mysql/debian.cnf`, seen after Debian 12 → 13 upgrades with
+  MariaDB 11.8), or an option file has a bad entry. If MariaDB won't
+  start, read `journalctl -u mariadb` in the LXC for the file or option it
+  names, and fix that. Don't confuse it with MariaDB Jira MDEV-35904:
+  with systemd v254+, `mariadb.service` logs *warnings* about the unset
+  variables `MYSQLD_OPTS`, `_WSREP_NEW_CLUSTER` and
+  `_WSREP_START_POSITION`. Those warnings are cosmetic, don't stop the
+  server, and are fixed in MariaDB 11.8.4 and later, so this role applies
+  no systemd override for them. (On older packages, a
+  `mariadb.service.d` override setting the three variables to empty
+  strings silences the warnings, but it does not fix a startup failure.)
 - **The Debian 13 LXC template has no `sudo`**, which breaks every
   Ansible `become: true` / `become_user` task until it is installed. The
   role installs it right after the base packages, before the first
