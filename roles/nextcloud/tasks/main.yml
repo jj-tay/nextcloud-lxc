@@ -54,6 +54,15 @@
     update_cache: true
     cache_valid_time: 3600
 
+# The Debian 13 LXC template ships without sudo, and every occ task below
+# (and in upgrade.yml) uses become_user: www-data with the default become
+# method, sudo. Without it become fails before the command runs, so the
+# task result has no stdout at all. Must stay before the first become task.
+- name: Install sudo for become_user www-data
+  ansible.builtin.apt:
+    name: sudo
+    state: present
+
 - name: Add www-data to the redis group (unix socket access)
   ansible.builtin.user:
     name: www-data
