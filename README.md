@@ -120,9 +120,14 @@ first run.
    - Datacenter → Permissions → Users: add a user, e.g. `ansible@pve`.
    - Datacenter → Permissions → API Tokens: add a token for it, e.g.
      `provision`. Copy the secret; it is only shown once.
-   - Datacenter → Permissions → Add: grant these roles. If the token has
-     *Privilege Separation* ticked, grant them to the token itself (user
-     `ansible@pve!provision`); otherwise to the user.
+   - Datacenter → Permissions → Roles: create a custom role, e.g.
+     `TemplateDownload`, with only the `Sys.AccessNetwork` privilege.
+     The template download (`community.proxmox.proxmox_template` with
+     `template:` set rather than `src:`) calls
+     `/storage/{storage}/download-url`, which Proxmox guards with
+     `Sys.AccessNetwork` on top of `Datastore.AllocateTemplate`, because
+     that endpoint can fetch arbitrary URLs.
+   - Datacenter → Permissions → Add: grant these four:
      - `PVEVMAdmin` on `/vms` (create, configure, start, and the
        `nesting=1` feature flag)
      - `PVEDatastoreAdmin` on `/storage/local` (template download) and
@@ -130,6 +135,17 @@ first run.
        `proxmox_lxc_template_storage` / `proxmox_lxc_rootfs_storage` are
      - `PVESDNUser` on `/sdn/zones/localnetwork` (to attach NICs to
        `vmbr0` / `vmbr1`)
+     - `TemplateDownload` (the custom role above) on `/nodes/<node-name>`,
+       i.e. `/nodes/{{ proxmox_lxc_node }}` (default `/nodes/proxmox`)
+   - **Easy to miss:** if the token has *Privilege Separation* ticked,
+     add **every** grant above **twice**: once to the token
+     (`ansible@pve!provision`) and once to the user (`ansible@pve`), with
+     the same paths and roles. A privilege-separated token's effective
+     permissions are the *intersection* of its own ACL entries and its
+     user's. If only the token has grants and the user has none, the
+     effective set is empty and every call returns 403, even though the
+     token's own ACL looks correct. Without Privilege Separation, grant
+     them to the user only; the token inherits them.
    - Put the host, user, token ID and secret into your real
      `group_vars/all/vault.yml` as `vault_proxmox_api_host`,
      `vault_proxmox_api_user`, `vault_proxmox_api_token_id` and
