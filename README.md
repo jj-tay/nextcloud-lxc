@@ -184,20 +184,38 @@ Not steps to do, but things to know when something breaks.
   the markers stop matching, the block gets added again, and the
   duplicated idmap lines stop the container from starting. This playbook
   writes them as a plain file rewrite instead (`tasks/host_idmap.yml`).
-- **MariaDB "Fatal error in defaults handling" is not MDEV-35904.**
-  This message comes from MariaDB's option-file handling: a defaults file
-  it was told to read is missing or unreadable (e.g.
-  `/etc/mysql/debian.cnf`, seen after Debian 12 → 13 upgrades with
-  MariaDB 11.8), or an option file has a bad entry. If MariaDB won't
-  start, read `journalctl -u mariadb` in the LXC for the file or option it
-  names, and fix that. Don't confuse it with MariaDB Jira MDEV-35904:
-  with systemd v254+, `mariadb.service` logs *warnings* about the unset
-  variables `MYSQLD_OPTS`, `_WSREP_NEW_CLUSTER` and
-  `_WSREP_START_POSITION`. Those warnings are cosmetic, don't stop the
-  server, and are fixed in MariaDB 11.8.4 and later, so this role applies
-  no systemd override for them. (On older packages, a
-  `mariadb.service.d` override setting the three variables to empty
-  strings silences the warnings, but it does not fix a startup failure.)
+- **MariaDB fails to start with "Fatal error in defaults handling" next
+  to a systemd unset-variable warning.** Seen in this install on Debian
+  13 with a MariaDB 11.8 package older than 11.8.4. `journalctl -u
+  mariadb` in the LXC shows:
+
+  ```
+  mariadbd[…]: Fatal error in defaults handling. Program aborted
+  (mariadbd)[…]: mariadb.service: Referenced but unset environment variable evaluates to an empty string
+  systemd[1]: mariadb.service: Main process exited, code=exited, status=1/FAILURE
+  ```
+
+  and the failing command is
+  `ExecStart=/usr/sbin/mariadbd $MYSQLD_OPTS $_WSREP_NEW_CLUSTER $_WSREP_START_POSITION`.
+  The "Referenced but unset" line is MariaDB Jira MDEV-35904: systemd
+  v254+ complains when `mariadb.service` uses those three variables
+  without setting them (fixed in MariaDB 11.8.4 and later). What cleared
+  the startup failure here was a manual systemd override in the LXC that
+  sets all three to empty strings,
+  `/etc/systemd/system/mariadb.service.d/override.conf`:
+
+  ```ini
+  [Service]
+  Environment=MYSQLD_OPTS=
+  Environment=_WSREP_NEW_CLUSTER=
+  Environment=_WSREP_START_POSITION=
+  ```
+
+  then `systemctl daemon-reload && systemctl restart mariadb`. This role
+  does not apply the override. If "Fatal error in defaults handling"
+  persists with the override in place, the cause is in MariaDB's option
+  files (`/etc/mysql/my.cnf` and the files it includes: one missing,
+  unreadable, or with a bad entry), not in systemd.
 - **The Debian 13 LXC template has no `sudo`**, which breaks every
   Ansible `become: true` / `become_user` task until it is installed. The
   role installs it right after the base packages, before the first
