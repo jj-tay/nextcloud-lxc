@@ -27,31 +27,96 @@ Design background: `docs/superpowers/specs/2026-09-09-nextcloud-lxc-design.md`.
 
 ## Prerequisites (manual, one-time)
 
-These are on the Proxmox host, the TrueNAS VM and the Ansible controller.
-The playbook creates the Nextcloud LXC itself and sets the Proxmox host's
-own vmbr1 IP, but never creates bridges and never touches TrueNAS.
+Everything in this section lives outside the playbook: Ansible never
+creates or fixes any of it, and never touches TrueNAS at all. A rebuild,
+or a fresh TrueNAS, must go through it by hand, in order, before the
+first run.
 
-1. **Proxmox**: create the `vmbr1` internal bridge (no physical uplink)
-   and attach a second NIC on `vmbr1` to the TrueNAS VM. The playbook does
-   the rest on vmbr1: the host's own static IP on the bridge
-   (`proxmox_host_vmbr1_ip`, default `10.10.10.1/24`, no gateway, written
-   to `/etc/network/interfaces`) and the LXC's `vmbr1` NIC (`net1`,
-   `eth1`, static `nextcloud_vmbr1_ip`, default `10.10.10.11/24`, no
-   gateway).
-2. **TrueNAS SCALE**:
-   - Give the VM's `vmbr1` NIC the static IP `10.10.10.10/24` with **no
-     gateway** (this must match `truenas_nfs_host`).
-   - Create the `tank/nextcloud` dataset, NFS-share it, and set the
-     export's mapall user/group to the UID configured in
-     `nextcloud_www_data_uid` (default `1000`) and the GID configured in
-     `nextcloud_www_data_gid` (default `3000`).
-   - Allow the **Proxmox host's** vmbr1 IP, `10.10.10.1/32`, in the
-     export's allowed networks: the host is what mounts the export now.
-     Keeping `10.10.10.11/32` (the LXC's vmbr1 IP) there as well is
-     harmless, but nothing in the playbook needs it any more, since the
-     LXC never talks to TrueNAS directly. Ansible never touches TrueNAS,
-     so this stays manual.
-3. **Proxmox API token** (used to create and start the LXC):
+### Storage network and TrueNAS NFS export
+
+1. **Proxmox host: create the `vmbr1` bridge.** Internal-only: no
+   bridge ports (no physical uplink), and no IP set when you create it.
+   The host's own vmbr1 IP is added later by the playbook (see step 6);
+   the playbook only fails if the bridge itself is missing.
+
+2. **Proxmox: give the TrueNAS VM a second NIC on `vmbr1`** (VM →
+   Hardware → Add → Network Device, bridge `vmbr1`), separate from its
+   LAN NIC.
+
+3. **TrueNAS: give that second NIC the static IP `10.10.10.10/24`, no
+   gateway.** It must match `truenas_nfs_host`.
+
+   If TrueNAS's network-edit UI throws a "gateway unreachable"
+   `CallError` while you do this, that is a known TrueNAS SCALE UI bug,
+   not a real misconfiguration. The reliable fallback is `midclt` on the
+   TrueNAS shell (`<ifname>` is the vmbr1 NIC's name inside TrueNAS):
+
+   ```bash
+   midclt call interface.update "<ifname>" '{"ipv4_dhcp": false, "aliases": [{"type": "INET", "address": "10.10.10.10", "netmask": 24}]}'
+   ```
+
+   Then apply it live with `ip addr add 10.10.10.10/24 dev <ifname>`
+   (not persistent), or with a systemd-networkd drop-in for persistence.
+   Avoid `midclt call interface.commit`: it re-evaluates *all*
+   interfaces, including the DHCP LAN NIC, and can drop connectivity.
+
+4. **TrueNAS: create a dedicated local user for the NFS export**, e.g.
+   `nextcloud-nfs`:
+   - SMB, TrueNAS, Shell and SSH access all unchecked; password disabled.
+   - UID chosen manually (this install used `1000`).
+   - "Create New Primary Group" checked. The group's GID will **not**
+     automatically match the UID: TrueNAS assigns it independently (it
+     landed on `3000` in this install).
+
+   Record the UID and GID TrueNAS actually assigns. Everything after this
+   must match them exactly, including `nextcloud_www_data_uid` /
+   `nextcloud_www_data_gid` in `roles/nextcloud/defaults/main.yml`
+   (defaults `1000` / `3000`), which the playbook uses for the `lxc.idmap`
+   carve-out and host `/etc/subuid` / `/etc/subgid` entries.
+
+5. **TrueNAS: create the dataset (e.g. `tank/nextcloud`) and NFS-share
+   it.** The export path must match `truenas_nfs_export` (default
+   `/mnt/tank/nextcloud`).
+   - **Mapall User / Mapall Group**: the user and group from step 4.
+   - **Networks**: add **both** the Nextcloud LXC's vmbr1 IP
+     (`10.10.10.11/32`) **and** the Proxmox host's vmbr1 IP
+     (`10.10.10.1/32`). The host's IP is the easy one to miss: it is not
+     obvious that the host needs NFS access, but it is the host that
+     mounts the export (see step 6).
+   - **Critical, easily missed: chown the dataset.** A new dataset is
+     owned by `root:root` with mode `0755`. Mapall only decides which
+     UID/GID new writes are attributed to; it does **not** change the
+     ownership of the dataset directory itself. Without this, no client
+     can write to it, however correctly mapall is set. On the TrueNAS
+     shell:
+
+     ```bash
+     chown nextcloud-nfs:nextcloud-nfs /mnt/tank/nextcloud
+     ```
+
+     or in the UI: Datasets → the dataset → Permissions → Edit, and set
+     Owner user and group to `nextcloud-nfs`.
+
+6. **Architecture note: why the Proxmox host needs vmbr1 and NFS access.**
+   NFS cannot be mounted directly inside an unprivileged LXC (confirmed by
+   testing and by Proxmox's own documentation: NFS has no support for
+   Linux user namespaces). So the playbook mounts the export on the
+   **Proxmox host** and bind-mounts that path into the LXC (see the
+   diagram at the top). The host therefore needs its own static IP on
+   vmbr1, `10.10.10.1/24` with no gateway (same pattern as TrueNAS's
+   interface), and that IP must be in the export's allowed networks
+   (step 5). The playbook sets this host IP itself
+   (`proxmox_host_vmbr1_ip`, written to `/etc/network/interfaces`), along
+   with the host NFS mount, `/etc/fstab` entry and `mp0` bind mount; you
+   only need to make sure TrueNAS allows it.
+
+7. **TrueNAS: confirm the NFS service is enabled and running** (System →
+   Services, with "Start Automatically" on). A configured share does
+   nothing while the service is off.
+
+### Other prerequisites
+
+8. **Proxmox API token** (used to create and start the LXC):
    - Datacenter → Permissions → Users: add a user, e.g. `ansible@pve`.
    - Datacenter → Permissions → API Tokens: add a token for it, e.g.
      `provision`. Copy the secret; it is only shown once.
@@ -71,9 +136,10 @@ own vmbr1 IP, but never creates bridges and never touches TrueNAS.
      `vault_proxmox_api_token_secret` (see `vault.yml.example`). They are
      new, so an existing vault.yml needs them added:
      `ansible-vault edit group_vars/all/vault.yml`.
-4. **Proxmox host**: still reachable over SSH as `root` from the Ansible
-   machine. Every install run, and each step only when something is
-   missing or wrong:
+9. **Proxmox host**: reachable over SSH as `root` from the Ansible
+   machine. Keep UID `1000` / GID `3000` (or whatever step 4 produced)
+   unused on the host itself. For reference, every install run does the
+   following there, each step only when something is missing or wrong:
    - sets the host's vmbr1 IP (`/etc/network/interfaces`, then
      `ifup vmbr1`),
    - mounts `truenas_nfs_host:truenas_nfs_export` at
@@ -84,26 +150,62 @@ own vmbr1 IP, but never creates bridges and never touches TrueNAS.
      the first time: the LXC is shut down, files it already owns as
      www-data (host `101000` / `103000`) are re-owned to `1000` / `3000`,
      and it is started again. Pre-existing, different `lxc.idmap` lines
-     make the play fail rather than be overwritten. Keep UID `1000` / GID
-     `3000` unused on the Proxmox host itself.
+     make the play fail rather than be overwritten.
    - reads the LXC's config with `pct config` and uses `pct set` to fix
-     the LXC's vmbr1 IP and the `mp0` bind mount
+     the LXC's vmbr1 IP (`net1`, `eth1`, static `nextcloud_vmbr1_ip`,
+     default `10.10.10.11/24`, no gateway) and the `mp0` bind mount
      (`nextcloud_host_nfs_mount` → `nextcloud_data_mount`). If `mp0` had
      to be changed, the LXC is restarted (`pct reboot`) so it takes
      effect. Host-path bind mounts need `root@pam`, which is why this is
      done over SSH and not with the API token.
 
    Upgrade runs also use it for `pct snapshot`.
-5. **UniFi**: a Fixed IP (DHCP reservation) of `nextcloud_lxc_host`
-   (default `192.168.10.51`) for the LXC's LAN MAC. Set
-   `proxmox_lxc_lan_hwaddr` so the MAC is known before the container
-   exists. Otherwise Proxmox picks a random MAC, and you add the
-   reservation after the first run.
-6. **Ansible controller**: `proxmoxer` (>= 2.3) and `requests` installed
-   for the Python that runs Ansible (`pip install proxmoxer requests` in
-   the same venv/pipx env), and the SSH public key in
-   `proxmox_lxc_ssh_pubkey_file` (default `~/.ssh/id_ed25519.pub`). It is
-   injected into the LXC's root account when the LXC is created.
+10. **UniFi**: a Fixed IP (DHCP reservation) of `nextcloud_lxc_host`
+    (default `192.168.10.51`) for the LXC's LAN MAC. Set
+    `proxmox_lxc_lan_hwaddr` so the MAC is known before the container
+    exists. Otherwise Proxmox picks a random MAC, and you add the
+    reservation after the first run.
+11. **Ansible controller**: `proxmoxer` (>= 2.3) and `requests` installed
+    for the Python that runs Ansible (`pip install proxmoxer requests` in
+    the same venv/pipx env), and the SSH public key in
+    `proxmox_lxc_ssh_pubkey_file` (default `~/.ssh/id_ed25519.pub`). It is
+    injected into the LXC's root account when the LXC is created.
+
+### Known environment gotchas
+
+Not steps to do, but things to know when something breaks.
+
+- **Proxmox mangles `#` lines in guest configs.** Leading `#` comment
+  lines in `/etc/pve/lxc/<vmid>.conf` become the container's description,
+  and on every config rewrite (start/stop, snapshots, GUI edits) Proxmox
+  URL-encodes them (`:` → `%3A`) and moves them. So raw `lxc.*` lines,
+  like the `lxc.idmap` entries this playbook writes, must never be wrapped
+  in `#`-prefixed marker comments (e.g. `blockinfile` BEGIN/END markers):
+  the markers stop matching, the block gets added again, and the
+  duplicated idmap lines stop the container from starting. This playbook
+  writes them as a plain file rewrite instead (`tasks/host_idmap.yml`).
+- **MariaDB 11.8 on very recent Debian 13 can fail to start** with
+  "Fatal error in defaults handling", from a systemd v254+ / MariaDB
+  packaging incompatibility (MariaDB Jira MDEV-35904). The workaround is
+  a systemd override for `mariadb.service` that sets `MYSQLD_OPTS`,
+  `_WSREP_NEW_CLUSTER` and `_WSREP_START_POSITION` to empty strings, e.g.
+  `/etc/systemd/system/mariadb.service.d/override.conf` in the LXC:
+
+  ```ini
+  [Service]
+  Environment=MYSQLD_OPTS=
+  Environment=_WSREP_NEW_CLUSTER=
+  Environment=_WSREP_START_POSITION=
+  ```
+
+  then `systemctl daemon-reload && systemctl restart mariadb`. **This
+  role does not apply that override yet**; if you hit the error, add it
+  by hand in the LXC and re-run the playbook.
+- **The Debian 13 LXC template has no `sudo`**, which breaks every
+  Ansible `become: true` / `become_user` task until it is installed. The
+  role installs it right after the base packages, before the first
+  `become_user` task (`roles/nextcloud/tasks/main.yml`, "Install sudo for
+  become_user www-data").
 
 ## Setup
 
@@ -145,7 +247,7 @@ ansible-playbook playbook.yml --ask-vault-pass
 2. **Install** (play on `nextcloud_lxc`, over SSH): the idempotent
    Nextcloud install. Before anything references the data directory, it
    sets up the storage path on the Proxmox host (vmbr1 IP, NFS mount,
-   `mp0` bind mount; see Prerequisites 4) and checks that
+   `mp0` bind mount; see Prerequisites 6 and 9) and checks that
    `nextcloud_data_mount` is NFS-backed inside the LXC.
 
 Safe to run repeatedly, including immediately after an upgrade — every
