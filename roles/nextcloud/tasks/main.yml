@@ -124,13 +124,39 @@
     - "php{{ nextcloud_php_version }}-fpm"
     - apache2
 
-- name: Set the MariaDB root password
-  community.mysql.mysql_user:
-    name: root
-    password: "{{ vault_mysql_root_password }}"
-    login_unix_socket: /run/mysqld/mysqld.sock
-    check_implicit_admin: true
-    state: present
+# MariaDB root stays on Debian's default unix_socket auth, with no password.
+# Ansible connects as OS root, so every task below logs in over the socket.
+# Giving root a password swaps unix_socket out, and /etc/mysql/debian-start
+# (run after every service start, logs in as root via debian.cnf with no
+# password) then fails, which skips mariadb-upgrade after package upgrades.
+- name: Check that MariaDB root can log in over the unix socket
+  ansible.builtin.command: mariadb --protocol=socket -u root -e 'SELECT 1'
+  register: mariadb_root_socket_login
+  changed_when: false
+  failed_when: false
+
+# Containers provisioned before this change have a password-only root. Put
+# unix_socket back using the old vault password, once; later runs skip this
+# because the check above succeeds.
+- name: Restore unix_socket auth for MariaDB root
+  when: mariadb_root_socket_login.rc != 0
+  block:
+    - name: Fail if there is no old root password to migrate with
+      ansible.builtin.fail:
+        msg: >-
+          MariaDB root refuses unix_socket login and vault_mysql_root_password
+          is not set, so root's auth cannot be restored automatically. Set it
+          to root's current password for one run, or run
+          ALTER USER 'root'@'localhost' IDENTIFIED VIA unix_socket by hand.
+      when: vault_mysql_root_password is not defined
+
+    - name: Switch MariaDB root back to unix_socket auth
+      community.mysql.mysql_query:
+        query: "ALTER USER 'root'@'localhost' IDENTIFIED VIA unix_socket"
+        login_user: root
+        login_password: "{{ vault_mysql_root_password }}"
+        login_unix_socket: /run/mysqld/mysqld.sock
+      no_log: true
 
 - name: Create the Nextcloud database
   community.mysql.mysql_db:
@@ -138,7 +164,7 @@
     encoding: utf8mb4
     collation: utf8mb4_general_ci
     login_user: root
-    login_password: "{{ vault_mysql_root_password }}"
+    login_unix_socket: /run/mysqld/mysqld.sock
     state: present
 
 - name: Create the Nextcloud database user
@@ -147,7 +173,7 @@
     password: "{{ vault_nextcloud_db_password }}"
     priv: "{{ nextcloud_db_name }}.*:ALL"
     login_user: root
-    login_password: "{{ vault_mysql_root_password }}"
+    login_unix_socket: /run/mysqld/mysqld.sock
     state: present
 
 - name: Check whether Nextcloud is already unpacked
