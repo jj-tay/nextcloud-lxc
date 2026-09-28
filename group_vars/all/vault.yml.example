@@ -6,7 +6,12 @@
 #
 # Never commit an unencrypted vault.yml.
 
-vault_mysql_root_password: CHANGE_ME
+# MariaDB root uses unix_socket auth and has no password. Only set
+# vault_mysql_root_password if the container was provisioned by an older
+# version of this playbook that gave root a password: set it to that
+# password for one run, which switches root back to unix_socket. You can
+# remove it afterwards.
+# vault_mysql_root_password: CHANGE_ME
 vault_nextcloud_db_password: CHANGE_ME
 vault_nextcloud_admin_password: CHANGE_ME
 
