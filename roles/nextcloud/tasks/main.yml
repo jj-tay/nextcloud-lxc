@@ -124,10 +124,15 @@
     - "php{{ nextcloud_php_version }}-fpm"
     - apache2
 
+# check_implicit_admin tries passwordless root over the socket first (works
+# on a fresh install); once the password is set that login is refused, so
+# login_user/login_password are the fallback that keeps re-runs working.
 - name: Set the MariaDB root password
   community.mysql.mysql_user:
     name: root
     password: "{{ vault_mysql_root_password }}"
+    login_user: root
+    login_password: "{{ vault_mysql_root_password }}"
     login_unix_socket: /run/mysqld/mysqld.sock
     check_implicit_admin: true
     state: present
